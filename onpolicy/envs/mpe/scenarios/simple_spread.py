@@ -18,7 +18,7 @@ class Scenario(BaseScenario):
             agent.name = 'agent %d' % i
             agent.collide = True
             agent.silent = True
-            agent.size = 0.15
+            agent.size = 0.08
         # add landmarks
         world.landmarks = [Landmark() for i in range(world.num_landmarks)]
         for i, landmark in enumerate(world.landmarks):
@@ -41,8 +41,20 @@ class Scenario(BaseScenario):
             agent.state.p_vel = np.zeros(world.dim_p)
             agent.state.c = np.zeros(world.dim_c)
         for i, landmark in enumerate(world.landmarks):
-            landmark.state.p_pos = 0.8 * np.random.uniform(-1, +1, world.dim_p)
             landmark.state.p_vel = np.zeros(world.dim_p)
+            # Try up to 100 times to find a position not too close to other landmarks
+            for _ in range(100):
+                pos = 0.8 * np.random.uniform(-1, +1, world.dim_p)
+                if i == 0:
+                    landmark.state.p_pos = pos
+                    break
+                dists = [np.linalg.norm(pos - world.landmarks[j].state.p_pos) for j in range(i)]
+                if min(dists) > 0.3:  # Minimum distance threshold
+                    landmark.state.p_pos = pos
+                    break
+            else:
+                # Fallback if we can't find a spaced-out position after 100 attempts
+                landmark.state.p_pos = pos
 
     def benchmark_data(self, agent, world):
         rew = 0
@@ -81,6 +93,19 @@ class Scenario(BaseScenario):
             for a in world.agents:
                 if self.is_collision(a, agent):
                     rew -= 1
+
+        # Add a boundary penalty to prevent agents from running out of bounds
+        def bound(x):
+            if x < 0.9:
+                return 0
+            if x < 1.0:
+                return (x - 0.9) * 10
+            return min(np.exp(2 * x - 2), 10)
+            
+        for p in range(world.dim_p):
+            x = abs(agent.state.p_pos[p])
+            rew -= bound(x)
+
         return rew
 
     def observation(self, agent, world):
