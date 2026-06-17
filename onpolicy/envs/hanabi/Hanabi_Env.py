@@ -296,7 +296,7 @@ class HanabiEnv(Environment):
             observation["current_player"] = current_player
             player_observations = observation['player_observations']
             
-            agent_turn = np.zeros(self.players, dtype=np.int).tolist()
+            agent_turn = np.zeros(self.players, dtype=int).tolist()
             agent_turn[current_player] = 1
 
             available_actions = np.zeros(self.num_moves())
@@ -485,7 +485,7 @@ class HanabiEnv(Environment):
         available_actions = np.zeros(self.num_moves())
         available_actions[player_observations[current_player]['legal_moves_as_int']] = 1.0
 
-        agent_turn = np.zeros(self.players, dtype=np.int).tolist()
+        agent_turn = np.zeros(self.players, dtype=int).tolist()
         agent_turn[current_player] = 1
 
         obs = player_observations[current_player]['vectorized'] + agent_turn
