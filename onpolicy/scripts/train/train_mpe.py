@@ -56,8 +56,13 @@ def parse_args(args, parser):
     parser.add_argument('--num_agents', type=int,
                         default=2, help="number of players")
 
-    all_args = parser.parse_known_args(args)[0]
+    # Add these for simple_tag (and similar predator-prey scenarios):
+    parser.add_argument('--num_good_agents', type=int, default=1,
+                        help="number of good (prey) agents")
+    parser.add_argument('--num_adversaries', type=int, default=3,
+                        help="number of adversary (predator) agents")
 
+    all_args = parser.parse_known_args(args)[0]
     return all_args
 
 
@@ -165,7 +170,7 @@ def main(args):
 
     if all_args.use_wandb:
         run.finish()
-    else:
+    if not all_args.use_render:
         runner.writter.export_scalars_to_json(str(runner.log_dir + '/summary.json'))
         runner.writter.close()
 

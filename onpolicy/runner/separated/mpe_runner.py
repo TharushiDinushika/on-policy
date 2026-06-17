@@ -18,6 +18,11 @@ class MPERunner(Runner):
         super(MPERunner, self).__init__(config)
        
     def run(self):
+
+        if self.use_render:
+            self.render()
+            return
+
         self.warmup()   
 
         start = time.time()
@@ -90,9 +95,9 @@ class MPERunner(Runner):
 
         for agent_id in range(self.num_agents):
             if not self.use_centralized_V:
-                share_obs = np.array(list(obs[:, agent_id]))
+                share_obs = np.array([obs[env_i][agent_id] for env_i in range(self.n_rollout_threads)])
             self.buffer[agent_id].share_obs[0] = share_obs.copy()
-            self.buffer[agent_id].obs[0] = np.array(list(obs[:, agent_id])).copy()
+            self.buffer[agent_id].obs[0] = np.array([obs[env_i][agent_id] for env_i in range(self.n_rollout_threads)]).copy()
 
     @torch.no_grad()
     def collect(self, step):
@@ -164,10 +169,10 @@ class MPERunner(Runner):
 
         for agent_id in range(self.num_agents):
             if not self.use_centralized_V:
-                share_obs = np.array(list(obs[:, agent_id]))
+                share_obs = np.array([obs[env_i][agent_id] for env_i in range(self.n_rollout_threads)])
 
             self.buffer[agent_id].insert(share_obs,
-                                        np.array(list(obs[:, agent_id])),
+                                        np.array([obs[env_i][agent_id] for env_i in range(self.n_rollout_threads)]),
                                         rnn_states[:, agent_id],
                                         rnn_states_critic[:, agent_id],
                                         actions[:, agent_id],
@@ -255,9 +260,9 @@ class MPERunner(Runner):
                 temp_actions_env = []
                 for agent_id in range(self.num_agents):
                     if not self.use_centralized_V:
-                        share_obs = np.array(list(obs[:, agent_id]))
+                        share_obs = np.array([obs[env_i][agent_id] for env_i in range(self.n_rollout_threads)])
                     self.trainer[agent_id].prep_rollout()
-                    action, rnn_state = self.trainer[agent_id].policy.act(np.array(list(obs[:, agent_id])),
+                    action, rnn_state = self.trainer[agent_id].policy.act(np.array([obs[env_i][agent_id] for env_i in range(self.n_rollout_threads)]),
                                                                         rnn_states[:, agent_id],
                                                                         masks[:, agent_id],
                                                                         deterministic=True)

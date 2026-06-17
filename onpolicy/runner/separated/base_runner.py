@@ -93,8 +93,7 @@ class Runner(object):
                         device = self.device)
             self.policy.append(po)
 
-        if self.model_dir is not None:
-            self.restore()
+        
 
         self.trainer = []
         self.buffer = []
@@ -109,6 +108,9 @@ class Runner(object):
                                        self.envs.action_space[agent_id])
             self.buffer.append(bu)
             self.trainer.append(tr)
+        
+        if self.model_dir is not None:
+            self.restore()
             
     def run(self):
         raise NotImplementedError
@@ -183,6 +185,8 @@ class Runner(object):
         return train_infos
 
     def save(self):
+        if self.use_render:  # Don't save during render/eval runs
+            return
         for agent_id in range(self.num_agents):
             policy_actor = self.trainer[agent_id].policy.actor
             torch.save(policy_actor.state_dict(), str(self.save_dir) + "/actor_agent" + str(agent_id) + ".pt")
@@ -203,6 +207,8 @@ class Runner(object):
                 self.trainer[agent_id].value_normalizer.load_state_dict(policy_vnrom_state_dict)
 
     def log_train(self, train_infos, total_num_steps): 
+        if self.use_render:
+            return
         for agent_id in range(self.num_agents):
             for k, v in train_infos[agent_id].items():
                 agent_k = "agent%i/" % agent_id + k
@@ -212,6 +218,8 @@ class Runner(object):
                     self.writter.add_scalars(agent_k, {agent_k: v}, total_num_steps)
 
     def log_env(self, env_infos, total_num_steps):
+        if self.use_render:
+            return
         for k, v in env_infos.items():
             if len(v) > 0:
                 if self.use_wandb:
