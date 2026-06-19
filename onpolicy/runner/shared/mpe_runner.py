@@ -8,6 +8,30 @@ import imageio
 def _t2n(x):
     return x.detach().cpu().numpy()
 
+def compute_coverage_rate(obs_batch, num_agents, num_landmarks, coverage_threshold=0.1):
+    lm_start = 4
+    n_threads = obs_batch.shape[0]
+    per_thread_coverage = []
+
+    for t in range(n_threads):
+        covered = 0
+        for lm in range(num_landmarks):
+            lm_x_idx = lm_start + lm * 2
+            lm_y_idx = lm_start + lm * 2 + 1
+            for agent_id in range(num_agents):
+                obs = obs_batch[t, agent_id]
+                if lm_y_idx >= len(obs):
+                    break
+                rel_x = obs[lm_x_idx]
+                rel_y = obs[lm_y_idx]
+                dist  = np.sqrt(rel_x ** 2 + rel_y ** 2)
+                if dist < coverage_threshold:
+                    covered += 1
+                    break
+        per_thread_coverage.append(covered / num_landmarks)
+
+    return float(np.mean(per_thread_coverage))
+
 class MPERunner(Runner):
     """Runner class to perform training, evaluation. and data collection for the MPEs. See parent class for details."""
     def __init__(self, config):
@@ -68,6 +92,15 @@ class MPERunner(Runner):
                                 idv_rews.append(info[agent_id]['individual_reward'])
                         agent_k = 'agent%i/individual_rewards' % agent_id
                         env_infos[agent_k] = idv_rews
+
+                    obs_snapshot = self.buffer.obs[-1]
+                    coverage = compute_coverage_rate(
+                        obs_snapshot,
+                        num_agents=self.num_agents,
+                        num_landmarks=getattr(self.all_args, "num_landmarks", self.num_agents),
+                    )
+                    train_infos["landmark_coverage_rate"] = coverage
+                    print("  [eval] coverage rate: {:.3f}".format(coverage))
 
                 train_infos["average_episode_rewards"] = np.mean(self.buffer.rewards) * self.episode_length
                 print("average episode rewards is {}".format(train_infos["average_episode_rewards"]))
@@ -141,6 +174,7 @@ class MPERunner(Runner):
     @torch.no_grad()
     def eval(self, total_num_steps):
         eval_episode_rewards = []
+        eval_coverage_rates = []
         eval_obs = self.eval_envs.reset()
 
         eval_rnn_states = np.zeros((self.n_eval_rollout_threads, *self.buffer.rnn_states.shape[2:]), dtype=np.float32)
@@ -171,6 +205,13 @@ class MPERunner(Runner):
             eval_obs, eval_rewards, eval_dones, eval_infos = self.eval_envs.step(eval_actions_env)
             eval_episode_rewards.append(eval_rewards)
 
+            cov = compute_coverage_rate(
+                eval_obs,
+                num_agents=self.num_agents,
+                num_landmarks=getattr(self.all_args, "num_landmarks", self.num_agents),
+            )
+            eval_coverage_rates.append(cov)
+
             eval_rnn_states[eval_dones == True] = np.zeros(((eval_dones == True).sum(), self.recurrent_N, self.hidden_size), dtype=np.float32)
             eval_masks = np.ones((self.n_eval_rollout_threads, self.num_agents, 1), dtype=np.float32)
             eval_masks[eval_dones == True] = np.zeros(((eval_dones == True).sum(), 1), dtype=np.float32)
@@ -179,7 +220,9 @@ class MPERunner(Runner):
         eval_env_infos = {}
         eval_env_infos['eval_average_episode_rewards'] = np.sum(np.array(eval_episode_rewards), axis=0)
         eval_average_episode_rewards = np.mean(eval_env_infos['eval_average_episode_rewards'])
-        print("eval average episode rewards of agent: " + str(eval_average_episode_rewards))
+        mean_coverage = float(np.mean(eval_coverage_rates))
+        eval_env_infos['eval_landmark_coverage_rate'] = mean_coverage
+        print("eval average episode rewards of agent: " + str(eval_average_episode_rewards) + f"  coverage: {mean_coverage:.3f}")
         self.log_env(eval_env_infos, total_num_steps)
 
     @torch.no_grad()
@@ -188,8 +231,10 @@ class MPERunner(Runner):
         envs = self.envs
         
         all_frames = []
+        render_coverage = []
         for episode in range(self.all_args.render_episodes):
             obs = envs.reset()
+            episode_coverage = []
             if self.all_args.save_gifs:
                 image = envs.render('rgb_array')[0][0]
                 all_frames.append(image)
@@ -228,6 +273,13 @@ class MPERunner(Runner):
                 obs, rewards, dones, infos = envs.step(actions_env)
                 episode_rewards.append(rewards)
 
+                cov = compute_coverage_rate(
+                    obs,
+                    num_agents=self.num_agents,
+                    num_landmarks=getattr(self.all_args, "num_landmarks", self.num_agents),
+                )
+                episode_coverage.append(cov)
+
                 rnn_states[dones == True] = np.zeros(((dones == True).sum(), self.recurrent_N, self.hidden_size), dtype=np.float32)
                 masks = np.ones((self.n_rollout_threads, self.num_agents, 1), dtype=np.float32)
                 masks[dones == True] = np.zeros(((dones == True).sum(), 1), dtype=np.float32)
@@ -242,7 +294,11 @@ class MPERunner(Runner):
                 else:
                     envs.render('human')
 
-            print("average episode rewards is: " + str(np.mean(np.sum(np.array(episode_rewards), axis=0))))
+            mean_ep_cov = float(np.mean(episode_coverage))
+            render_coverage.append(mean_ep_cov)
+            print("average episode rewards is: " + str(np.mean(np.sum(np.array(episode_rewards), axis=0))) + f"  coverage: {mean_ep_cov:.3f}")
+
+        print(f"  Mean coverage : {np.mean(render_coverage):.3f} ± {np.std(render_coverage):.3f}")
 
         if self.all_args.save_gifs:
             imageio.mimsave(str(self.gif_dir) + '/render.gif', all_frames, duration=self.all_args.ifi)

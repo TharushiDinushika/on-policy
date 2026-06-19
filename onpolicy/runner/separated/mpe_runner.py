@@ -13,6 +13,30 @@ import imageio
 def _t2n(x):
     return x.detach().cpu().numpy()
 
+def compute_coverage_rate(obs_batch, num_agents, num_landmarks, coverage_threshold=0.1):
+    lm_start = 4
+    n_threads = obs_batch.shape[0]
+    per_thread_coverage = []
+
+    for t in range(n_threads):
+        covered = 0
+        for lm in range(num_landmarks):
+            lm_x_idx = lm_start + lm * 2
+            lm_y_idx = lm_start + lm * 2 + 1
+            for agent_id in range(num_agents):
+                obs = obs_batch[t, agent_id]
+                if lm_y_idx >= len(obs):
+                    break
+                rel_x = obs[lm_x_idx]
+                rel_y = obs[lm_y_idx]
+                dist  = np.sqrt(rel_x ** 2 + rel_y ** 2)
+                if dist < coverage_threshold:
+                    covered += 1
+                    break
+        per_thread_coverage.append(covered / num_landmarks)
+
+    return float(np.mean(per_thread_coverage))
+
 class MPERunner(Runner):
     def __init__(self, config):
         super(MPERunner, self).__init__(config)
@@ -72,12 +96,24 @@ class MPERunner(Runner):
                 if self.env_name == "MPE":
                     for agent_id in range(self.num_agents):
                         idv_rews = []
-                        for info in infos:
-                            for count, info in enumerate(infos):
-                                if 'individual_reward' in infos[count][agent_id].keys():
-                                    idv_rews.append(infos[count][agent_id].get('individual_reward', 0))
+                        for count, info in enumerate(infos):
+                            if 'individual_reward' in infos[count][agent_id].keys():
+                                idv_rews.append(infos[count][agent_id].get('individual_reward', 0))
                         train_infos[agent_id].update({'individual_rewards': np.mean(idv_rews)})
                         train_infos[agent_id].update({"average_episode_rewards": np.mean(self.buffer[agent_id].rewards) * self.episode_length})
+                    
+                    obs_snapshot = np.stack(
+                        [self.buffer[aid].obs[-1] for aid in range(self.num_agents)],
+                        axis=1)
+                    coverage = compute_coverage_rate(
+                        obs_snapshot,
+                        num_agents=self.num_agents,
+                        num_landmarks=getattr(self.all_args, "num_landmarks", self.num_agents),
+                    )
+                    for agent_id in range(self.num_agents):
+                        train_infos[agent_id].update({"landmark_coverage_rate": coverage})
+                    print("  [eval] coverage rate: {:.3f}".format(coverage))
+
                 self.log_train(train_infos, total_num_steps)
 
             # eval
@@ -184,6 +220,7 @@ class MPERunner(Runner):
     @torch.no_grad()
     def eval(self, total_num_steps):
         eval_episode_rewards = []
+        eval_coverage_rates = []
         eval_obs = self.eval_envs.reset()
 
         eval_rnn_states = np.zeros((self.n_eval_rollout_threads, self.num_agents, self.recurrent_N, self.hidden_size), dtype=np.float32)
@@ -227,25 +264,42 @@ class MPERunner(Runner):
             eval_obs, eval_rewards, eval_dones, eval_infos = self.eval_envs.step(eval_actions_env)
             eval_episode_rewards.append(eval_rewards)
 
+            obs_snap = np.stack(
+                [np.array(list(eval_obs[:, aid]))
+                for aid in range(self.num_agents)],
+                axis=1)
+            cov = compute_coverage_rate(
+                obs_snap,
+                num_agents=self.num_agents,
+                num_landmarks=getattr(self.all_args, "num_landmarks", self.num_agents),
+            )
+            eval_coverage_rates.append(cov)
+
             eval_rnn_states[eval_dones == True] = np.zeros(((eval_dones == True).sum(), self.recurrent_N, self.hidden_size), dtype=np.float32)
             eval_masks = np.ones((self.n_eval_rollout_threads, self.num_agents, 1), dtype=np.float32)
             eval_masks[eval_dones == True] = np.zeros(((eval_dones == True).sum(), 1), dtype=np.float32)
 
         eval_episode_rewards = np.array(eval_episode_rewards)
+        mean_coverage = float(np.mean(eval_coverage_rates))
         
         eval_train_infos = []
         for agent_id in range(self.num_agents):
             eval_average_episode_rewards = np.mean(np.sum(eval_episode_rewards[:, :, agent_id], axis=0))
-            eval_train_infos.append({'eval_average_episode_rewards': eval_average_episode_rewards})
-            print("eval average episode rewards of agent%i: " % agent_id + str(eval_average_episode_rewards))
+            eval_train_infos.append({
+                'eval_average_episode_rewards': eval_average_episode_rewards,
+                'eval_landmark_coverage_rate': mean_coverage
+            })
+            print("eval average episode rewards of agent%i: " % agent_id + str(eval_average_episode_rewards) + f"  coverage: {mean_coverage:.3f}")
 
         self.log_train(eval_train_infos, total_num_steps)  
 
     @torch.no_grad()
     def render(self):        
         all_frames = []
+        render_coverage = []
         for episode in range(self.all_args.render_episodes):
             episode_rewards = []
+            episode_coverage = []
             obs = self.envs.reset()
             if self.all_args.save_gifs:
                 image = self.envs.render('rgb_array')[0][0]
@@ -296,6 +350,17 @@ class MPERunner(Runner):
                 obs, rewards, dones, infos = self.envs.step(actions_env)
                 episode_rewards.append(rewards)
 
+                obs_snap = np.stack(
+                    [np.array(list(obs[:, aid]))
+                    for aid in range(self.num_agents)],
+                    axis=1)
+                cov = compute_coverage_rate(
+                    obs_snap,
+                    num_agents=self.num_agents,
+                    num_landmarks=getattr(self.all_args, "num_landmarks", self.num_agents),
+                )
+                episode_coverage.append(cov)
+
                 rnn_states[dones == True] = np.zeros(((dones == True).sum(), self.recurrent_N, self.hidden_size), dtype=np.float32)
                 masks = np.ones((self.n_rollout_threads, self.num_agents, 1), dtype=np.float32)
                 masks[dones == True] = np.zeros(((dones == True).sum(), 1), dtype=np.float32)
@@ -309,9 +374,13 @@ class MPERunner(Runner):
                         time.sleep(self.all_args.ifi - elapsed)
 
             episode_rewards = np.array(episode_rewards)
+            mean_ep_cov = float(np.mean(episode_coverage))
+            render_coverage.append(mean_ep_cov)
             for agent_id in range(self.num_agents):
                 average_episode_rewards = np.mean(np.sum(episode_rewards[:, :, agent_id], axis=0))
-                print("eval average episode rewards of agent%i: " % agent_id + str(average_episode_rewards))
+                print("eval average episode rewards of agent%i: " % agent_id + str(average_episode_rewards) + f"  coverage: {mean_ep_cov:.3f}")
+        
+        print(f"  Mean coverage : {np.mean(render_coverage):.3f} ± {np.std(render_coverage):.3f}")
         
         if self.all_args.save_gifs:
             imageio.mimsave(str(self.gif_dir) + '/render.gif', all_frames, duration=self.all_args.ifi)
