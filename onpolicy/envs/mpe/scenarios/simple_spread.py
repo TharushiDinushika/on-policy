@@ -76,7 +76,7 @@ class Scenario(BaseScenario):
                 occupied_landmarks += 1
         if agent.collide:
             for a in world.agents:
-                if self.is_collision(a, agent):
+                if a is not agent and self.is_collision(a, agent):
                     rew -= 1
                     collisions += 1
         return (rew, collisions, min_dists, occupied_landmarks)
@@ -97,7 +97,7 @@ class Scenario(BaseScenario):
 
         if agent.collide:
             for a in world.agents:
-                if self.is_collision(a, agent):
+                if a is not agent and self.is_collision(a, agent):
                     rew -= 1
 
         # Add a boundary penalty to prevent agents from running out of bounds
