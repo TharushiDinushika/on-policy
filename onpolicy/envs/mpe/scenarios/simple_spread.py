@@ -43,18 +43,24 @@ class Scenario(BaseScenario):
         for i, landmark in enumerate(world.landmarks):
             landmark.state.p_vel = np.zeros(world.dim_p)
             # Try up to 100 times to find a position not too close to other landmarks
+            best_pos = None
+            max_min_dist = -1
             for _ in range(100):
-                pos = 0.8 * np.random.uniform(-1, +1, world.dim_p)
+                pos = 1 * np.random.uniform(-1, +1, world.dim_p)
                 if i == 0:
                     landmark.state.p_pos = pos
                     break
                 dists = [np.linalg.norm(pos - world.landmarks[j].state.p_pos) for j in range(i)]
-                if min(dists) > 0.3:  # Minimum distance threshold
+                min_dist = min(dists)
+                if min_dist > 1:  # Minimum distance threshold
                     landmark.state.p_pos = pos
                     break
+                if min_dist > max_min_dist:
+                    max_min_dist = min_dist
+                    best_pos = pos
             else:
                 # Fallback if we can't find a spaced-out position after 100 attempts
-                landmark.state.p_pos = pos
+                landmark.state.p_pos = best_pos if best_pos is not None else pos
 
     def benchmark_data(self, agent, world):
         rew = 0
