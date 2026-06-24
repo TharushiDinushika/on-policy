@@ -102,11 +102,13 @@ class MPERunner(Runner):
                         train_infos[agent_id].update({'individual_rewards': np.mean(idv_rews)})
                         train_infos[agent_id].update({"average_episode_rewards": np.mean(self.buffer[agent_id].rewards) * self.episode_length})
                     
-                    obs_snapshot = np.stack(
-                        [self.buffer[aid].obs[-1] for aid in range(self.num_agents)],
-                        axis=1)
+                    # compute average coverage rate over the entire episode
+                    obs_batch = np.stack(
+                        [self.buffer[aid].obs[:-1] for aid in range(self.num_agents)],
+                        axis=2)
+                    obs_batch = obs_batch.reshape(-1, self.num_agents, obs_batch.shape[-1])
                     coverage = compute_coverage_rate(
-                        obs_snapshot,
+                        obs_batch,
                         num_agents=self.num_agents,
                         num_landmarks=getattr(self.all_args, "num_landmarks", self.num_agents),
                     )

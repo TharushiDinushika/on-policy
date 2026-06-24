@@ -93,9 +93,10 @@ class MPERunner(Runner):
                         agent_k = 'agent%i/individual_rewards' % agent_id
                         env_infos[agent_k] = idv_rews
 
-                    obs_snapshot = self.buffer.obs[-1]
+                    # compute average coverage rate over the entire episode
+                    obs_batch = self.buffer.obs[:-1].reshape(-1, self.num_agents, self.buffer.obs.shape[-1])
                     coverage = compute_coverage_rate(
-                        obs_snapshot,
+                        obs_batch,
                         num_agents=self.num_agents,
                         num_landmarks=getattr(self.all_args, "num_landmarks", self.num_agents),
                     )
