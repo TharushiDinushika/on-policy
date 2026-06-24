@@ -95,13 +95,24 @@ class MPERunner(Runner):
 
                     # compute average coverage rate over the entire episode
                     obs_batch = self.buffer.obs[:-1].reshape(-1, self.num_agents, self.buffer.obs.shape[-1])
+                    num_landmarks = getattr(self.all_args, "num_landmarks", self.num_agents)
                     coverage = compute_coverage_rate(
                         obs_batch,
                         num_agents=self.num_agents,
-                        num_landmarks=getattr(self.all_args, "num_landmarks", self.num_agents),
+                        num_landmarks=num_landmarks,
                     )
+                    
+                    final_obs_batch = self.buffer.obs[-2].reshape(-1, self.num_agents, self.buffer.obs.shape[-1])
+                    final_coverage = compute_coverage_rate(
+                        final_obs_batch,
+                        num_agents=self.num_agents,
+                        num_landmarks=num_landmarks,
+                    )
+                    final_landmarks = final_coverage * num_landmarks
+
                     train_infos["landmark_coverage_rate"] = coverage
-                    print("  [eval] coverage rate: {:.3f}".format(coverage))
+                    train_infos["final_covered_landmarks"] = final_landmarks
+                    print("  [eval] coverage rate: {:.3f}  final landmarks: {:.2f}".format(coverage, final_landmarks))
 
                 train_infos["average_episode_rewards"] = np.mean(self.buffer.rewards) * self.episode_length
                 print("average episode rewards is {}".format(train_infos["average_episode_rewards"]))
@@ -222,8 +233,12 @@ class MPERunner(Runner):
         eval_env_infos['eval_average_episode_rewards'] = np.sum(np.array(eval_episode_rewards), axis=0)
         eval_average_episode_rewards = np.mean(eval_env_infos['eval_average_episode_rewards'])
         mean_coverage = float(np.mean(eval_coverage_rates))
+        num_landmarks = getattr(self.all_args, "num_landmarks", self.num_agents)
+        final_landmarks = float(eval_coverage_rates[-2] * num_landmarks) if len(eval_coverage_rates) >= 2 else 0.0
+        
         eval_env_infos['eval_landmark_coverage_rate'] = mean_coverage
-        print("eval average episode rewards of agent: " + str(eval_average_episode_rewards) + f"  coverage: {mean_coverage:.3f}")
+        eval_env_infos['eval_final_covered_landmarks'] = final_landmarks
+        print("eval average episode rewards of agent: " + str(eval_average_episode_rewards) + f"  coverage: {mean_coverage:.3f}  final landmarks: {final_landmarks:.2f}")
         self.log_env(eval_env_infos, total_num_steps)
 
     @torch.no_grad()
@@ -297,7 +312,10 @@ class MPERunner(Runner):
 
             mean_ep_cov = float(np.mean(episode_coverage))
             render_coverage.append(mean_ep_cov)
-            print("average episode rewards is: " + str(np.mean(np.sum(np.array(episode_rewards), axis=0))) + f"  coverage: {mean_ep_cov:.3f}")
+            num_landmarks = getattr(self.all_args, "num_landmarks", self.num_agents)
+            final_cov = float(episode_coverage[-2] * num_landmarks) if len(episode_coverage) >= 2 else 0.0
+            
+            print("average episode rewards is: " + str(np.mean(np.sum(np.array(episode_rewards), axis=0))) + f"  coverage: {mean_ep_cov:.3f}  final landmarks: {final_cov:.2f}")
 
         print(f"  Mean coverage : {np.mean(render_coverage):.3f} ± {np.std(render_coverage):.3f}")
 

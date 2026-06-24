@@ -107,14 +107,29 @@ class MPERunner(Runner):
                         [self.buffer[aid].obs[:-1] for aid in range(self.num_agents)],
                         axis=2)
                     obs_batch = obs_batch.reshape(-1, self.num_agents, obs_batch.shape[-1])
+                    num_landmarks = getattr(self.all_args, "num_landmarks", self.num_agents)
                     coverage = compute_coverage_rate(
                         obs_batch,
                         num_agents=self.num_agents,
-                        num_landmarks=getattr(self.all_args, "num_landmarks", self.num_agents),
+                        num_landmarks=num_landmarks,
                     )
+                    
+                    final_obs_batch = np.stack(
+                        [self.buffer[aid].obs[-2] for aid in range(self.num_agents)],
+                        axis=1)
+                    final_coverage = compute_coverage_rate(
+                        final_obs_batch,
+                        num_agents=self.num_agents,
+                        num_landmarks=num_landmarks,
+                    )
+                    final_landmarks = final_coverage * num_landmarks
+
                     for agent_id in range(self.num_agents):
-                        train_infos[agent_id].update({"landmark_coverage_rate": coverage})
-                    print("  [eval] coverage rate: {:.3f}".format(coverage))
+                        train_infos[agent_id].update({
+                            "landmark_coverage_rate": coverage,
+                            "final_covered_landmarks": final_landmarks
+                        })
+                    print("  [eval] coverage rate: {:.3f}  final landmarks: {:.2f}".format(coverage, final_landmarks))
 
                 self.log_train(train_infos, total_num_steps)
 
@@ -283,15 +298,18 @@ class MPERunner(Runner):
 
         eval_episode_rewards = np.array(eval_episode_rewards)
         mean_coverage = float(np.mean(eval_coverage_rates))
+        num_landmarks = getattr(self.all_args, "num_landmarks", self.num_agents)
+        final_landmarks = float(eval_coverage_rates[-2] * num_landmarks) if len(eval_coverage_rates) >= 2 else 0.0
         
         eval_train_infos = []
         for agent_id in range(self.num_agents):
             eval_average_episode_rewards = np.mean(np.sum(eval_episode_rewards[:, :, agent_id], axis=0))
             eval_train_infos.append({
                 'eval_average_episode_rewards': eval_average_episode_rewards,
-                'eval_landmark_coverage_rate': mean_coverage
+                'eval_landmark_coverage_rate': mean_coverage,
+                'eval_final_covered_landmarks': final_landmarks
             })
-            print("eval average episode rewards of agent%i: " % agent_id + str(eval_average_episode_rewards) + f"  coverage: {mean_coverage:.3f}")
+            print("eval average episode rewards of agent%i: " % agent_id + str(eval_average_episode_rewards) + f"  coverage: {mean_coverage:.3f}  final landmarks: {final_landmarks:.2f}")
 
         self.log_train(eval_train_infos, total_num_steps)  
 
@@ -378,9 +396,12 @@ class MPERunner(Runner):
             episode_rewards = np.array(episode_rewards)
             mean_ep_cov = float(np.mean(episode_coverage))
             render_coverage.append(mean_ep_cov)
+            num_landmarks = getattr(self.all_args, "num_landmarks", self.num_agents)
+            final_cov = float(episode_coverage[-2] * num_landmarks) if len(episode_coverage) >= 2 else 0.0
+            
             for agent_id in range(self.num_agents):
                 average_episode_rewards = np.mean(np.sum(episode_rewards[:, :, agent_id], axis=0))
-                print("eval average episode rewards of agent%i: " % agent_id + str(average_episode_rewards) + f"  coverage: {mean_ep_cov:.3f}")
+                print("eval average episode rewards of agent%i: " % agent_id + str(average_episode_rewards) + f"  coverage: {mean_ep_cov:.3f}  final landmarks: {final_cov:.2f}")
         
         print(f"  Mean coverage : {np.mean(render_coverage):.3f} ± {np.std(render_coverage):.3f}")
         
