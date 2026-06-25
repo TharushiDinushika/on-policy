@@ -37,9 +37,91 @@ def compute_coverage_rate(obs_batch, num_agents, num_landmarks, coverage_thresho
 
     return float(np.mean(per_thread_coverage))
 
+def compute_min_landmark_distance(obs_batch, num_agents, num_landmarks):
+    lm_start = 4
+    n_threads = obs_batch.shape[0]
+    per_thread_min_dist = []
+
+    for t in range(n_threads):
+        lm_min_dists = []
+        for lm in range(num_landmarks):
+            lm_x_idx = lm_start + lm * 2
+            lm_y_idx = lm_start + lm * 2 + 1
+            min_dist = float('inf')
+            for agent_id in range(num_agents):
+                obs = obs_batch[t, agent_id]
+                if lm_y_idx >= len(obs):
+                    break
+                rel_x = obs[lm_x_idx]
+                rel_y = obs[lm_y_idx]
+                dist = np.sqrt(rel_x ** 2 + rel_y ** 2)
+                if dist < min_dist:
+                    min_dist = dist
+            if min_dist != float('inf'):
+                lm_min_dists.append(min_dist)
+        
+        if lm_min_dists:
+            per_thread_min_dist.append(np.mean(lm_min_dists))
+        else:
+            per_thread_min_dist.append(0.0)
+
+    return float(np.mean(per_thread_min_dist))
+
+def compute_inter_agent_distance(obs_batch, num_agents, num_landmarks):
+    if num_agents <= 1:
+        return 0.0
+    other_agent_start = 4 + 2 * num_landmarks
+    n_threads = obs_batch.shape[0]
+    per_thread_dist = []
+
+    for t in range(n_threads):
+        total_dist = 0
+        pairs = 0
+        for agent_id in range(num_agents):
+            obs = obs_batch[t, agent_id]
+            for other_idx in range(num_agents - 1):
+                x_idx = other_agent_start + other_idx * 2
+                y_idx = other_agent_start + other_idx * 2 + 1
+                if y_idx >= len(obs):
+                    break
+                rel_x = obs[x_idx]
+                rel_y = obs[y_idx]
+                dist = np.sqrt(rel_x ** 2 + rel_y ** 2)
+                total_dist += dist
+                pairs += 1
+        
+        if pairs > 0:
+            per_thread_dist.append(total_dist / pairs)
+        else:
+            per_thread_dist.append(0.0)
+
+    return float(np.mean(per_thread_dist))
+
+def compute_reward_metrics(reward_history):
+    arr = np.array(reward_history)
+    return {
+        "mean":  float(np.mean(arr)),
+        "std":   float(np.std(arr)),
+        "min":   float(np.min(arr)),
+        "max":   float(np.max(arr)),
+    }
+
+def steps_to_convergence(reward_log, threshold=0.9, smooth_window=10):
+    if len(reward_log) < smooth_window:
+        return len(reward_log)
+    arr     = np.array(reward_log)
+    kernel  = np.ones(smooth_window) / smooth_window
+    smooth  = np.convolve(arr, kernel, mode='valid')
+    peak    = smooth.max()
+    target  = threshold * peak
+    hits    = np.where(smooth >= target)[0]
+    return int(hits[0]) if len(hits) > 0 else len(reward_log)
+
 class MPERunner(Runner):
     def __init__(self, config):
         super(MPERunner, self).__init__(config)
+        self._episode_reward_history   = []
+        self._episode_coverage_history = []
        
     def run(self):
 
@@ -124,18 +206,65 @@ class MPERunner(Runner):
                     )
                     final_landmarks = final_coverage * num_landmarks
 
+                    min_lm_dist = compute_min_landmark_distance(
+                        obs_batch,
+                        num_agents=self.num_agents,
+                        num_landmarks=num_landmarks,
+                    )
+                    inter_agent_dist = compute_inter_agent_distance(
+                        obs_batch,
+                        num_agents=self.num_agents,
+                        num_landmarks=num_landmarks,
+                    )
+
                     for agent_id in range(self.num_agents):
                         train_infos[agent_id].update({
                             "landmark_coverage_rate": coverage,
-                            "final_covered_landmarks": final_landmarks
+                            "final_covered_landmarks": final_landmarks,
+                            "min_landmark_distance": min_lm_dist,
+                            "inter_agent_distance": inter_agent_dist,
                         })
-                    print("  [eval] coverage rate: {:.3f}  final landmarks: {:.2f}".format(coverage, final_landmarks))
+                    
+                    mean_ep_rew = np.mean([
+                        train_infos[aid]["average_episode_rewards"]
+                        for aid in range(self.num_agents)])
+                    self._episode_reward_history.append(float(mean_ep_rew))
+                    self._episode_coverage_history.append(float(coverage))
+
+                    print("  [eval] coverage rate: {:.3f}  final landmarks: {:.2f}  min LM dist: {:.3f}  inter-agent dist: {:.3f}  mean ep reward: {:.3f}".format(coverage, final_landmarks, min_lm_dist, inter_agent_dist, mean_ep_rew))
 
                 self.log_train(train_infos, total_num_steps)
 
             # eval
             if episode % self.eval_interval == 0 and self.use_eval:
                 self.eval(total_num_steps)
+
+        self._print_convergence_summary()
+
+    def _print_convergence_summary(self):
+        if not self._episode_reward_history:
+            return
+
+        conv_ep = steps_to_convergence(self._episode_reward_history)
+        stats   = compute_reward_metrics(self._episode_reward_history)
+        jump    = float(np.mean(self._episode_reward_history[:10])) \
+                  if len(self._episode_reward_history) >= 10 \
+                  else float(np.mean(self._episode_reward_history))
+        peak_cov = float(np.max(self._episode_coverage_history)) \
+                   if self._episode_coverage_history else 0.0
+        mean_cov = float(np.mean(self._episode_coverage_history)) \
+                   if self._episode_coverage_history else 0.0
+
+        print("\n" + "=" * 60)
+        print("  TRAINING SUMMARY")
+        print("=" * 60)
+        print(f"  Peak reward          : {stats['max']:.3f}")
+        print(f"  Mean reward (all)    : {stats['mean']:.3f} ± {stats['std']:.3f}")
+        print(f"  Jump-start reward    : {jump:.3f}  (first 10 episodes)")
+        print(f"  Steps to convergence : episode {conv_ep}  (90% of peak)")
+        print(f"  Peak coverage rate   : {peak_cov:.3f}")
+        print(f"  Mean coverage rate   : {mean_cov:.3f}")
+        print("=" * 60 + "\n")
 
     def warmup(self):
         # reset env
@@ -238,6 +367,8 @@ class MPERunner(Runner):
     def eval(self, total_num_steps):
         eval_episode_rewards = []
         eval_coverage_rates = []
+        eval_min_lm_dists = []
+        eval_inter_agent_dists = []
         eval_obs = self.eval_envs.reset()
 
         eval_rnn_states = np.zeros((self.n_eval_rollout_threads, self.num_agents, self.recurrent_N, self.hidden_size), dtype=np.float32)
@@ -285,12 +416,27 @@ class MPERunner(Runner):
                 [np.array(list(eval_obs[:, aid]))
                 for aid in range(self.num_agents)],
                 axis=1)
+            num_landmarks = getattr(self.all_args, "num_landmarks", self.num_agents)
             cov = compute_coverage_rate(
                 obs_snap,
                 num_agents=self.num_agents,
-                num_landmarks=getattr(self.all_args, "num_landmarks", self.num_agents),
+                num_landmarks=num_landmarks,
             )
             eval_coverage_rates.append(cov)
+
+            min_lm_dist = compute_min_landmark_distance(
+                obs_snap,
+                num_agents=self.num_agents,
+                num_landmarks=num_landmarks,
+            )
+            eval_min_lm_dists.append(min_lm_dist)
+            
+            inter_agent_dist = compute_inter_agent_distance(
+                obs_snap,
+                num_agents=self.num_agents,
+                num_landmarks=num_landmarks,
+            )
+            eval_inter_agent_dists.append(inter_agent_dist)
 
             eval_rnn_states[eval_dones == True] = np.zeros(((eval_dones == True).sum(), self.recurrent_N, self.hidden_size), dtype=np.float32)
             eval_masks = np.ones((self.n_eval_rollout_threads, self.num_agents, 1), dtype=np.float32)
@@ -300,6 +446,8 @@ class MPERunner(Runner):
         mean_coverage = float(np.mean(eval_coverage_rates))
         num_landmarks = getattr(self.all_args, "num_landmarks", self.num_agents)
         final_landmarks = float(eval_coverage_rates[-2] * num_landmarks) if len(eval_coverage_rates) >= 2 else 0.0
+        mean_min_lm_dist = float(np.mean(eval_min_lm_dists))
+        mean_inter_agent_dist = float(np.mean(eval_inter_agent_dists))
         
         eval_train_infos = []
         for agent_id in range(self.num_agents):
@@ -307,9 +455,11 @@ class MPERunner(Runner):
             eval_train_infos.append({
                 'eval_average_episode_rewards': eval_average_episode_rewards,
                 'eval_landmark_coverage_rate': mean_coverage,
-                'eval_final_covered_landmarks': final_landmarks
+                'eval_final_covered_landmarks': final_landmarks,
+                'eval_min_landmark_distance': mean_min_lm_dist,
+                'eval_inter_agent_distance': mean_inter_agent_dist,
             })
-            print("eval average episode rewards of agent%i: " % agent_id + str(eval_average_episode_rewards) + f"  coverage: {mean_coverage:.3f}  final landmarks: {final_landmarks:.2f}")
+            print("eval average episode rewards of agent%i: " % agent_id + str(eval_average_episode_rewards) + f"  coverage: {mean_coverage:.3f}  final landmarks: {final_landmarks:.2f}  min LM dist: {mean_min_lm_dist:.3f}  inter-agent dist: {mean_inter_agent_dist:.3f}")
 
         self.log_train(eval_train_infos, total_num_steps)  
 

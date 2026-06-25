@@ -52,7 +52,7 @@ class Scenario(BaseScenario):
                     break
                 dists = [np.linalg.norm(pos - world.landmarks[j].state.p_pos) for j in range(i)]
                 min_dist = min(dists)
-                if min_dist > 1:  # Minimum distance threshold
+                if min_dist > 0.8:  # Minimum distance threshold
                     landmark.state.p_pos = pos
                     break
                 if min_dist > max_min_dist:
